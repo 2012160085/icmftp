@@ -1,14 +1,15 @@
 import threading
 import scapy 
 import socket
+import struct
+import time
+import sys
 from scapy.layers.inet import IP
 from scapy.layers.inet import ICMP
 from scapy.layers.l2 import Ether
 from scapy.all import sniff
 import queue
 import os
-if os.name == 'nt':
-    import pydivert
     
 
         
@@ -76,7 +77,7 @@ class ICMFTP_sender(threading.Thread):
         self.filename = filename
         self.buffsize = buffsize
         self.magic_num = 'ZZZZ'.encode()
-        self.trans_id = (123456).to_bytes(4,byteorder="little")
+        self.trans_id = 'abcd'.encode()
         threading.Thread.__init__(self, name='ICMFTP_sender_'+filename)
         
     def calculate_checksum(self,source_string):
@@ -92,16 +93,13 @@ class ICMFTP_sender(threading.Thread):
             else:
                 loByte = source_string[count + 1]
                 hiByte = source_string[count]
-            if not six.PY3:
-                loByte = ord(loByte)
-                hiByte = ord(hiByte)
+
             sum = sum + (hiByte * 256 + loByte)
             count += 2
 
         if countTo < len(source_string): 
             loByte = source_string[len(source_string) - 1]
-            if not six.PY3:
-                loByte = ord(loByte)
+
             sum += loByte
 
         sum &= 0xffffffff 
@@ -152,11 +150,22 @@ class ICMFTP_sender(threading.Thread):
         meta_data += (23456).to_bytes(8,byteorder="little")
         meta_data += (5432).to_bytes(8,byteorder="little")
         meta_data += self.filename.encode()
+        self.send_one_ping(meta_data)
+        time.sleep(1)
+        idx = 0
+		
         with open(self.filename, "rb") as f:
             byte = f.read(self.buffsize)
             while byte:
-                self.send_one_ping(byte)
+                header = self.trans_id + idx.to_bytes(4,byteorder="little")
+                self.send_one_ping(header+byte)
+                print('######',byte)
                 byte = f.read(self.buffsize)
+                print('@@@@@@',byte)
+                idx += 1
+        time.sleep(0.5)
+        header = self.trans_id + idx.to_bytes(4,byteorder="little")
+        self.send_one_ping(header+'_fin__fin_'.encode())
         print(self.name,"finished file transmit")
                 
 class DATA_PROCESS(threading.Thread):
@@ -177,7 +186,7 @@ class DATA_PROCESS(threading.Thread):
             except queue.Empty:
                 pass
             else:
-                if len(data) == 5 and data.decode() == '_fin_':
+                if len(data[1]) == 10 and data[1] == b'_fin__fin_':
                     break
                 if data[0] == self.idx:
                     self.filestream.write(data[1])
@@ -188,11 +197,18 @@ class DATA_PROCESS(threading.Thread):
                         self.filestream.write(self.data_dict[self.idx])
                         self.idx += 1
         if len(self.data_dict) > 0:
-            print('err')
+            print('error')
         else:
-            print('fin')
+            print('transfer complete..')
         self.filestream.close()
 if __name__ == '__main__':
-    que = queue.Queue()
-    a = ICMFTP_receiver("172.20.144.127",que)
-    a.start()
+    mode = input("select mode(send/recv):")
+    while mode not in ['send','recv']:
+        mode = input("select mode(send/recv):")
+    if mode == 'recv':    
+        que = queue.Queue()
+        a = ICMFTP_receiver(input("sender IP:"),que)
+        a.start()
+    else:
+        a = ICMFTP_sender(input("receiver IP:"),input("file name(same directory):"))
+        a.start()
